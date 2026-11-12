@@ -59,7 +59,8 @@ section('publish.yml: the weekly pipeline');
   check('the contribs cache key includes the VLC commit AND the patches hash',
     /vlc-contribs-\$\{\{ steps\.vlc\.outputs\.commit \}\}[\s\S]*hashFiles\('patches\/\*'/.test(wf), '');
   check('emscripten version is pinned', /EM_VERSION: \d+\.\d+\.\d+/.test(wf), '');
-  check('the VLC source comes from the upstream repo (not a fork)', /code\.videolan\.org\/videolan\/vlc/.test(wf), '');
+  check('the VLC source comes from the upstream repo (not a fork)',
+    /(code\.videolan\.org|github\.com)\/videolan\/vlc/.test(wf), '');
   check('the site staging guards file count and size', /-gt 80/.test(wf) && /-gt 120/.test(wf), '');
   check('generate-sw-manifest.mjs runs on the staged site', /generate-sw-manifest\.mjs site-publish/.test(wf), '');
   check('staging excludes the build trees', /--exclude='\.vlc-build'/.test(wf) && /--exclude='vlc'/.test(wf), '');

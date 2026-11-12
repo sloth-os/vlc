@@ -28,7 +28,7 @@ concurrency:
 env:
   EM_VERSION: 6.0.0
   EM_CACHE_FOLDER: emsdk-cache
-  VLC_REPO: https://code.videolan.org/videolan/vlc.git
+  VLC_REPO: https://github.com/videolan/vlc.git
 
 jobs:
   build:
@@ -66,9 +66,11 @@ jobs:
         if: ${{ !inputs.skip_build }}
         uses: actions/checkout@v5
         with:
-          # code.videolan.org speaks the git smart protocol; a GitHub mirror
-          # exists too. actions/checkout handles full URLs.
-          repository: https://code.videolan.org/videolan/vlc.git
+          # VLC's official GitHub mirror (actions/checkout only accepts
+          # {owner}/{repo}, and GitHub-hosted clones are fast from runners;
+          # code.videolan.org is the upstream git host). The mirror tracks
+          # upstream master with only brief lag.
+          repository: videolan/vlc
           ref: ${{ steps.vlc.outputs.commit }}
           path: vlc
           fetch-depth: 1

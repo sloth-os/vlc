@@ -97,7 +97,7 @@ python3 -m http.server -d . 8080
 The engine can be built locally the same way CI does it (no Docker needed):
 
 ```sh
-git clone https://code.videolan.org/videolan/vlc.git ../vlc
+git clone https://github.com/videolan/vlc.git ../vlc   # official mirror
 # emsdk 6.0.0 on PATH + the apt packages from publish.yml, then:
 VLC_SRC=../vlc .github/scripts/build-vlc.sh
 ```
