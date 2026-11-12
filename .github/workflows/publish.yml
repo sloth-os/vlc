@@ -116,6 +116,7 @@ jobs:
       - name: Build VLC for wasm and link
         if: ${{ !inputs.skip_build }}
         env:
+          VLC_SRC: ${{ github.workspace }}/vlc
           VLC_COMMIT: ${{ steps.vlc.outputs.commit }}
           JOBS: 4
           WORK: ${{ github.workspace }}/.vlc-build/work
