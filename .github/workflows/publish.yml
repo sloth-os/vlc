@@ -46,10 +46,10 @@ jobs:
           if [ -n "${INPUT_VLC_COMMIT:-}" ]; then
             commit="$INPUT_VLC_COMMIT"
           else
-            # The head of VLC master. (The site's README records which clone
-            # this is expected to track; the workflow builds whatever HEAD
-            # the upstream repo answers with.)
-            commit=$(git ls-remote --heads "$VLC_REPO" main | cut -f1)
+            # The head of the default branch, whatever it is named (VLC
+            # upstream calls it "master"). Resolving HEAD keeps working if
+            # upstream ever renames the default branch.
+            commit=$(git ls-remote --symref "$VLC_REPO" HEAD | grep -E '^([0-9a-f]{40})[[:space:]]' | head -1 | cut -f1)
           fi
           # A ref name is also accepted: resolve it through ls-remote.
           if ! printf '%s' "$commit" | grep -Eqx '[0-9a-f]{40}'; then
