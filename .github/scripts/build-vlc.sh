@@ -26,6 +26,15 @@ NATIVE=$(cd "$(dirname "$0")/../.." && pwd)/native
 # optional).0030 is libdvdcss-for-emscripten: this site never distributes it.
 SKIP_PATCHES="0030 "
 
+# emsdk activation puts upstream/emscripten near the front of PATH, and that
+# directory contains a `cmake/` *directory* (the CMake toolchain modules). A
+# shell skips directories while searching PATH, but GNU make's direct-exec
+# fast path does not — so a make recipe that runs plain `cmake` (VLC's
+# extras/tools builds its ninja that way) dies with "cmake: Permission
+# denied". Put the system directories first: nothing there shadows the
+# uniquely-named emsdk tools (emcc, emsdk, ...).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 export MAKEFLAGS="-j$JOBS"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 
