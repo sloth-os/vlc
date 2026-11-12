@@ -1,0 +1,258 @@
+name: Build & Publish VLC WASM
+
+on:
+  schedule:
+    - cron: '0 4 * * 1' # every Monday 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      vlc_commit:
+        description: 'VLC commit (hash or ref) to build; empty = origin/master of the pinned repo'
+        required: false
+        default: ''
+      skip_build:
+        description: 'Skip building (redeploy site with wasm from the latest successful build)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read # needed to fetch the wasm-build artifact from a previous run (skip_build)
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  EM_VERSION: 6.0.0
+  EM_CACHE_FOLDER: emsdk-cache
+  VLC_REPO: https://code.videolan.org/videolan/vlc.git
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout site repository
+        uses: actions/checkout@v5
+
+      - name: Resolve the VLC commit
+        id: vlc
+        env:
+          INPUT_VLC_COMMIT: ${{ inputs.vlc_commit }}
+        run: |
+          if [ -n "${INPUT_VLC_COMMIT:-}" ]; then
+            commit="$INPUT_VLC_COMMIT"
+          else
+            # The head of VLC master. (The site's README records which clone
+            # this is expected to track; the workflow builds whatever HEAD
+            # the upstream repo answers with.)
+            commit=$(git ls-remote --heads "$VLC_REPO" main | cut -f1)
+          fi
+          # A ref name is also accepted: resolve it through ls-remote.
+          if ! printf '%s' "$commit" | grep -Eqx '[0-9a-f]{40}'; then
+            commit=$(git ls-remote "$VLC_REPO" "$commit" "$commit^{}" | head -1 | cut -f1 || true)
+          fi
+          if ! printf '%s' "$commit" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error::could not resolve a VLC commit (input: '${INPUT_VLC_COMMIT:-<master>}')"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "Building VLC $commit"
+
+      - name: Checkout VLC source
+        if: ${{ !inputs.skip_build }}
+        uses: actions/checkout@v5
+        with:
+          # code.videolan.org speaks the git smart protocol; a GitHub mirror
+          # exists too. actions/checkout handles full URLs.
+          repository: https://code.videolan.org/videolan/vlc.git
+          ref: ${{ steps.vlc.outputs.commit }}
+          path: vlc
+          fetch-depth: 1
+          submodules: false
+
+      - name: Restore the VLC build tree (contribs cache)
+        if: ${{ !inputs.skip_build }}
+        uses: actions/cache@v4
+        with:
+          path: .vlc-build
+          # Contribs (FFmpeg, dav1d, libass, ...) are the slow part (about an
+          # hour). Keyed on everything that can change them.
+          key: vlc-contribs-${{ steps.vlc.outputs.commit }}-${{ hashFiles('patches/*', '.github/scripts/build-vlc.sh') }}
+          restore-keys: |
+            vlc-contribs-${{ steps.vlc.outputs.commit }}-
+            vlc-contribs-
+
+      - name: Setup Emscripten
+        if: ${{ !inputs.skip_build }}
+        uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: ${{ env.EM_VERSION }}
+          actions-cache-folder: ${{ env.EM_CACHE_FOLDER }}
+
+      - name: Install build dependencies
+        if: ${{ !inputs.skip_build }}
+        run: |
+          sudo apt-get update -qq
+          # The toolchain VLC's contrib system needs (mirrors the
+          # libvlc-wasm-build image's package list, minus docker-only tools).
+          sudo apt-get install -y -qq \
+            libtool libtool-bin libltdl-dev automake autoconf autopoint \
+            make gettext pkg-config cmake zip bzip2 zstd xz-utils wget \
+            dos2unix g++ m4 ninja-build build-essential gperf flex bison \
+            nasm meson python3 python3-venv python3-setuptools python3-mako \
+            locales file
+          sudo localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 || true
+
+      - name: Verify Emscripten
+        if: ${{ !inputs.skip_build }}
+        run: emcc --version | head -1
+
+      - name: Build VLC for wasm and link
+        if: ${{ !inputs.skip_build }}
+        env:
+          VLC_COMMIT: ${{ steps.vlc.outputs.commit }}
+          JOBS: 4
+          WORK: ${{ github.workspace }}/.vlc-build/work
+          OUT_DIR: ${{ github.workspace }}/wasm-stage
+        run: |
+          # The contribs/build trees live inside the VLC checkout, so the
+          # cache directory is moved aside while CI's fresh checkout is in
+          # place: a cached tree is restored INTO vlc/ before the build.
+          if [ -d .vlc-build/vlc/contrib ]; then
+            # Restore the cached contrib trees into the fresh checkout (same
+            # commit, so the source files are identical); the tarballs and
+            # the built contribs survive between runs this way.
+            rsync -a .vlc-build/vlc/contrib/ vlc/contrib/ 2>/dev/null || true
+          fi
+          if [ -d .vlc-build/vlc/build-emscripten ]; then
+            rsync -a .vlc-build/vlc/build-emscripten vlc/ 2>/dev/null || true
+          fi
+          .github/scripts/build-vlc.sh
+          # Stage the finished engine + metadata, then refresh the cache.
+          mkdir -p wasm-stage
+          cp wasm/libvlc.js wasm/libvlc.wasm wasm/VLC_COMMIT wasm-stage/
+          # Cache the contrib trees + tarballs (the hour-long part) for the
+          # next build of the same or a nearby commit.
+          mkdir -p .vlc-build/vlc/contrib .vlc-build/vlc/build
+          rsync -a vlc/contrib/contrib-emscripten vlc/contrib/tarballs \
+            vlc/contrib/wasm32-unknown-emscripten .vlc-build/vlc/contrib/
+          rsync -a vlc/build-emscripten .vlc-build/vlc/ 2>/dev/null || true
+          echo "staged:"
+          ls -la wasm-stage/
+
+      - name: Smoke-test the engine under Node
+        if: ${{ !inputs.skip_build }}
+        run: |
+          # The engine boots under Node (its ENVIRONMENT includes node): the
+          # bridge answers `version`, which proves the module linked, its
+          # pthreads start and the RPC queue answers.
+          node .github/scripts/wasm-smoke-test.mjs \
+            wasm-stage/libvlc.js wasm-stage/libvlc.wasm
+
+      - name: Stage build metadata
+        if: ${{ !inputs.skip_build }}
+        run: |
+          V=$(node -e '
+            const m = require("fs").readFileSync("wasm-stage/VLC_COMMIT","utf8").trim();
+            console.log(m.slice(0,12));')
+          cat > wasm-stage/build-info.json <<EOF
+          {
+            "version": "VLC 4.0.0-dev",
+            "ref": "${{ steps.vlc.outputs.commit }}",
+            "commit": "$V",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "emscripten": "${{ env.EM_VERSION }}"
+          }
+          EOF
+          cat wasm-stage/build-info.json
+
+      - name: Upload wasm-build artifact
+        if: ${{ !inputs.skip_build }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build
+          path: wasm-stage/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Reuse wasm from latest successful build
+        if: ${{ inputs.skip_build }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The latest successful run that actually CARRIES a wasm-build
+          # artifact (a skip_build run reuses instead of uploading, so the
+          # most recent success may itself have been a redeploy).
+          RUN_ID=""
+          for CAND in $(gh run list --workflow=publish.yml --status=success \
+                          --limit 10 --json databaseId --jq '.[].databaseId'); do
+            COUNT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAND/artifacts?name=wasm-build" \
+                      --jq '.total_count')
+            if [ "$COUNT" != "0" ]; then RUN_ID="$CAND"; break; fi
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::skip_build requested but no previous successful run with a wasm-build artifact exists."
+            exit 1
+          fi
+          echo "Reusing wasm-build artifact from run $RUN_ID"
+          rm -rf wasm-stage
+          gh run download "$RUN_ID" --name wasm-build --dir wasm-stage
+          ls -la wasm-stage/
+          cat wasm-stage/build-info.json
+
+      - name: Stage site assets
+        run: |
+          set -euo pipefail
+          # Site files (index.html, app.js, worker.js, ...) live at repo root;
+          # the wasm build (fresh or reused) lands in wasm/.
+          rsync -a \
+            --exclude='.github' --exclude='.git' --exclude='.gitignore' \
+            --exclude='README.md' --exclude='vlc' --exclude='wasm' \
+            --exclude='wasm-stage' --exclude='site-publish' --exclude='tests' \
+            --exclude='.vlc-build' --exclude='native' --exclude='patches' \
+            --exclude='emsdk-cache' --exclude='node_modules' \
+            --exclude='.build' \
+            ./ site-publish/
+          mkdir -p site-publish/wasm
+          cp wasm-stage/libvlc.js wasm-stage/libvlc.wasm site-publish/wasm/
+          cp wasm-stage/build-info.json site-publish/
+          # Fonts for subtitles (VLC's freetype has no system fonts in wasm).
+          # Served from the repo, fetched at runtime only when subtitles show.
+          echo "--- site-publish ---"
+          find site-publish -type f | sort
+          # The site is a handful of files + the engine (~25 MB). If a CI
+          # working directory ever leaks past the excludes, fail here instead
+          # of uploading junk to Pages.
+          FILES=$(find site-publish -type f | wc -l)
+          SIZE_MB=$(du -sm site-publish | cut -f1)
+          if [ "$FILES" -gt 80 ] || [ "$SIZE_MB" -gt 120 ]; then
+            echo "::error::site-publish looks wrong: $FILES files, ${SIZE_MB} MB (expected <=80 files, <=120 MB)"
+            find site-publish -maxdepth 1 | sort
+            exit 1
+          fi
+
+      - name: Generate service worker asset list
+        run: |
+          node .github/scripts/generate-sw-manifest.mjs site-publish
+          cat site-publish/sw-manifest.js
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-publish
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,304 @@
+{
+  "name": "VLC WASM \u2014 play anything in your browser",
+  "short_name": "VLC",
+  "description": "VLC 4's playback engine compiled to WebAssembly: play the media formats browsers can't, entirely locally.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#111111",
+  "icons": [
+    {
+      "src": "./icons/icon-16.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "video/x-matroska": [
+          ".mkv",
+          ".mk3d"
+        ],
+        "video/quicktime": [
+          ".mov",
+          ".qt"
+        ],
+        "video/x-msvideo": [
+          ".avi",
+          ".divx"
+        ],
+        "video/mpeg": [
+          ".mpeg",
+          ".mpg",
+          ".m2v"
+        ],
+        "video/mp2t": [
+          ".ts",
+          ".mts",
+          ".m2ts",
+          ".m2t"
+        ],
+        "video/x-flv": [
+          ".flv",
+          ".f4v"
+        ],
+        "video/x-ms-wmv": [
+          ".wmv",
+          ".asf"
+        ],
+        "video/x-realmedia": [
+          ".rm",
+          ".rmvb"
+        ],
+        "video/x-ogg-vorbis": [
+          ".ogm",
+          ".ogv"
+        ],
+        "video/3gpp": [
+          ".3gp",
+          ".3g2"
+        ],
+        "video/x-m4v": [
+          ".m4v"
+        ],
+        "video/x-nsv": [
+          ".nsv",
+          ".vivo",
+          ".viv"
+        ],
+        "video/x-bink": [
+          ".bik",
+          ".bk2"
+        ],
+        "video/x-dv": [
+          ".dv",
+          ".dif"
+        ],
+        "audio/x-flac": [
+          ".flac"
+        ],
+        "audio/x-wav": [
+          ".wav",
+          ".wave",
+          ".bwf"
+        ],
+        "audio/ogg": [
+          ".ogg",
+          ".oga",
+          ".opus"
+        ],
+        "audio/x-musepack": [
+          ".mpc",
+          ".mp+",
+          ".mpp"
+        ],
+        "audio/x-monkeys-audio": [
+          ".ape",
+          ".apl"
+        ],
+        "audio/x-wavpack": [
+          ".wv",
+          ".wvc"
+        ],
+        "audio/x-tta": [
+          ".tta"
+        ],
+        "audio/x-shorten": [
+          ".shn"
+        ],
+        "audio/x-speex": [
+          ".spx"
+        ],
+        "audio/x-aiff": [
+          ".aiff",
+          ".aif",
+          ".aifc"
+        ],
+        "audio/x-ms-wma": [
+          ".wma"
+        ],
+        "audio/x-pn-realaudio": [
+          ".ra"
+        ],
+        "audio/x-amr": [
+          ".amr",
+          ".awb"
+        ],
+        "audio/x-ac3": [
+          ".ac3",
+          ".eac3",
+          ".dts"
+        ],
+        "audio/x-au": [
+          ".au",
+          ".snd"
+        ],
+        "audio/x-caf": [
+          ".caf"
+        ],
+        "audio/x-voc": [
+          ".voc"
+        ],
+        "audio/x-8svx": [
+          ".8svx",
+          ".iff"
+        ],
+        "audio/x-aax": [
+          ".aax"
+        ],
+        "audio/x-dsf": [
+          ".dsf",
+          ".dff"
+        ],
+        "audio/x-vqf": [
+          ".vqf",
+          ".twinvq"
+        ],
+        "audio/x-mlp": [
+          ".mlp"
+        ],
+        "audio/x-oma": [
+          ".oma",
+          ".aa3",
+          ".at3"
+        ],
+        "audio/x-mmf": [
+          ".mmf"
+        ],
+        "audio/x-gsm": [
+          ".gsm"
+        ],
+        "audio/x-tak": [
+          ".tak"
+        ],
+        "audio/x-mo3": [
+          ".mo3"
+        ],
+        "audio/x-mod": [
+          ".mod",
+          ".xm",
+          ".it",
+          ".s3m",
+          ".669",
+          ".med",
+          ".far",
+          ".mtm",
+          ".ult",
+          ".stm",
+          ".okt"
+        ],
+        "audio/midi": [
+          ".mid",
+          ".midi",
+          ".rmi",
+          ".kar"
+        ],
+        "audio/x-sid": [
+          ".sid",
+          ".psid",
+          ".mus",
+          ".str"
+        ],
+        "audio/x-gbs": [
+          ".gbs"
+        ],
+        "audio/x-nsf": [
+          ".nsf"
+        ],
+        "audio/x-sap": [
+          ".sap"
+        ],
+        "audio/x-ay": [
+          ".ay",
+          ".ym",
+          ".gym",
+          ".hes",
+          ".kss",
+          ".vgm",
+          ".vgz"
+        ],
+        "application/x-cd-image": [
+          ".iso",
+          ".bin",
+          ".img",
+          ".nrg",
+          ".mds",
+          ".mdf",
+          ".cdi",
+          ".dvd",
+          ".bwt",
+          ".pdi"
+        ],
+        "application/x-cue": [
+          ".cue"
+        ],
+        "application/x-dvd": [
+          ".ifo",
+          ".bup"
+        ],
+        "application/vnd.rn-realmedia": [
+          ".rmj",
+          ".rms",
+          ".rmx"
+        ],
+        "application/x-shockwave-flash": [
+          ".swf"
+        ],
+        "application/x-mpegurl": [
+          ".m3u",
+          ".m3u8",
+          ".vlc"
+        ],
+        "application/x-scpls": [
+          ".pls"
+        ],
+        "application/xspf+xml": [
+          ".xspf",
+          ".asx",
+          ".wax",
+          ".wvx",
+          ".b4s"
+        ]
+      },
+      "launch_type": "multiple-clients"
+    }
+  ],
+  "share_target": {
+    "action": "./__share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "*/*"
+          ]
+        }
+      ]
+    }
+  }
+}

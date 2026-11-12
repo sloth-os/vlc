@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucas gelfond <lucasgelfond@gmail.com>
+Date: Sun, 27 Sep 2026 16:23:00 +0000
+Subject: [PATCH 10/12] fourcc: add Siren audio
+
+Siren 7, the G.722.1 precursor used by Vivo 2 files.
+---
+ include/vlc_fourcc.h   | 1 +
+ src/misc/fourcc_list.h | 4 ++++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/include/vlc_fourcc.h b/include/vlc_fourcc.h
+index 0cfc697..94784c4 100644
+--- a/include/vlc_fourcc.h
++++ b/include/vlc_fourcc.h
+@@ -584,6 +584,7 @@
+ #define VLC_CODEC_ADPCM_XA_EA                VLC_FOURCC('X','A','J', 0)
+ #define VLC_CODEC_G723_1                     VLC_FOURCC('g','7','2', 0x31)
+ #define VLC_CODEC_G729                       VLC_FOURCC('g','7','2','9')
++#define VLC_CODEC_SIREN                      VLC_FOURCC('s','i','r','n')
+ #define VLC_CODEC_VMDAUDIO                   VLC_FOURCC('v','m','d','a')
+ #define VLC_CODEC_AMR_NB                     VLC_FOURCC('s','a','m','r')
+ #define VLC_CODEC_AMR_WB                     VLC_FOURCC('s','a','w','b')
+diff --git a/src/misc/fourcc_list.h b/src/misc/fourcc_list.h
+index 812fede..0ed725a 100644
+--- a/src/misc/fourcc_list.h
++++ b/src/misc/fourcc_list.h
+@@ -1670,6 +1670,10 @@ static const staticentry_t p_list_audio[] = {
+     B(VLC_CODEC_G723_1, "G.723.1 Audio"),
+         A("g72\x31"),
+ 
++    /* Siren 7 (G.722.1 precursor), Vivo 2 */
++    B(VLC_CODEC_SIREN, "Siren Audio"),
++        A("sirn"),
++
+     /* PCM */
+     B(VLC_CODEC_S8, "PCM S8"),
+         A("s8  "),

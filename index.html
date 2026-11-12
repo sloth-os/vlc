@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- coi.js first: it registers the service worker that makes this page
+       cross-origin isolated (SharedArrayBuffer), reloading once if needed. -->
+  <script src="./coi.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="VLC's playback engine running entirely in your browser via WebAssembly — play the media formats browsers can't, no uploads, works offline">
+  <meta name="theme-color" content="#111111">
+  <meta name="color-scheme" content="dark light">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png">
+  <title>VLC WASM — play anything in your browser</title>
+  <style>
+    /* ---------- base ---------- */
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    .hidden { display: none !important; }
+
+    :root {
+      color-scheme: dark light;
+      --bg: #111111;
+      --bg-soft: #171a1f;
+      --card: #1c1f26;
+      --border: #2d323c;
+      --fg: #e9ebef;
+      --muted: #99a1b0;
+      --accent: #ff8800;
+      --accent-strong: #ffa245;
+      --accent-soft: rgba(255, 136, 0, 0.12);
+      --accent-fg: #1a0d00;
+      --error: #ff7a70;
+      --ok: #57d98a;
+      --console-bg: #0e1014;
+      --console-fg: #cdd6e4;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6f9;
+        --bg-soft: #eaeef4;
+        --card: #ffffff;
+        --border: #d6dbe4;
+        --fg: #1b2029;
+        --muted: #5c6572;
+        --accent: #e07000;
+        --accent-strong: #c46100;
+        --accent-soft: rgba(224, 112, 0, 0.10);
+        --accent-fg: #ffffff;
+        --error: #c53030;
+        --ok: #1c7c3f;
+        --console-bg: #10141b;
+        --console-fg: #d7dee9;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.07);
+      }
+    }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    ::selection { background: var(--accent); color: var(--accent-fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    /* ---------- header ---------- */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem 0.75rem;
+      flex-wrap: wrap;
+      padding: 0.7rem 1.1rem;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+    .brand img { width: 26px; height: 26px; flex: none; }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+    }
+    .brand h1 em { font-style: normal; color: var(--accent); }
+    .header-tools { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .header-tools .btn { padding: 0.35rem 0.85rem; font-size: 0.8rem; border-radius: 999px; }
+
+    #net-status,
+    .version-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-soft);
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    #net-status::before {
+      content: "";
+      flex: none;
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    #net-status.online::before { background: var(--ok); }
+    #net-status.offline::before { background: var(--error); }
+    #net-status.online { color: var(--fg); }
+
+    /* ---------- buttons ---------- */
+    .btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.55rem 1.05rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--fg);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .btn:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-fg);
+    }
+    .btn.primary:not(:disabled):hover {
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+      color: var(--accent-fg);
+    }
+
+    /* ---------- layout ---------- */
+    main {
+      flex: 1 0 auto;
+      width: 100%;
+      max-width: 60rem;
+      margin: 0 auto;
+      padding: 1.25rem 1rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .card {
+      margin: 0;
+      padding: 1.1rem 1.25rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+    }
+    h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .panel-head h2 { margin: 0; }
+    .panel-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+    /* ---------- dropzone ---------- */
+    #dropzone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.55rem;
+      text-align: center;
+      padding: 3.25rem 1.5rem;
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      background: var(--bg-soft);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    #dropzone:hover,
+    #dropzone:focus-visible,
+    #dropzone.dragover,
+    #dropzone.dragging,
+    #dropzone.drag-enter,
+    #dropzone.drag-over {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    #dropzone svg { color: var(--accent); flex: none; }
+    .dz-title { margin: 0; font-size: 1.15rem; font-weight: 700; text-wrap: balance; }
+    .dz-sub { margin: 0; max-width: 36rem; color: var(--muted); font-size: 0.9rem; text-wrap: pretty; }
+    .dz-actions { text-align: center; margin: 0.6rem 0 0; }
+
+    /* ---------- player ---------- */
+    #player-stage { position: relative; background: #000; border-radius: 14px; overflow: hidden; }
+    #player-stage video { display: none; }
+    #video-canvas {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      outline: none;
+    }
+    #player-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      color: #eee;
+      font-size: 0.95rem;
+      text-align: center;
+      padding: 1rem;
+      background: rgba(0, 0, 0, 0.45);
+    }
+    #player-overlay:empty { background: transparent; }
+
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 0.75rem;
+    }
+    #controls .grow { flex: 1 1 auto; min-width: 12rem; }
+    .ctl-time {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.85rem;
+      color: var(--muted);
+      min-width: 9.5ch;
+      text-align: center;
+    }
+    input[type="range"] {
+      accent-color: var(--accent);
+      width: 100%;
+      margin: 0;
+    }
+    #seek-bar { padding: 0.3rem 0; }
+    .ctl-group { display: flex; align-items: center; gap: 0.5rem; }
+
+    /* ---------- status + log ---------- */
+    #status-line {
+      margin: 0;
+      min-height: 1.4em;
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    #status-line:empty { display: none; }
+    #status-line.error { color: var(--error); font-weight: 600; }
+
+    #progress-output {
+      margin: 0;
+      padding: 0.8rem 0.95rem;
+      min-height: 4.5rem;
+      max-height: 12rem;
+      overflow: auto;
+      background: var(--console-bg);
+      color: var(--console-fg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+    }
+    #progress-output:empty { display: none; }
+
+    /* ---------- media info ---------- */
+    #media-name {
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 1rem;
+      color: var(--fg);
+      overflow-wrap: anywhere;
+    }
+    .table-wrap {
+      margin-top: 0.9rem;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    table {
+      width: 100%;
+      min-width: 30rem;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    thead th {
+      padding: 0.55rem 0.75rem;
+      text-align: left;
+      background: var(--bg-soft);
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td {
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+      vertical-align: top;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: var(--bg-soft); }
+    td.type-audio::before { content: '🔊 '; }
+    td.type-video::before { content: '🎬 '; }
+    td.type-text::before { content: '💬 '; }
+
+    /* ---------- playlist ---------- */
+    #playlist { list-style: none; margin: 0.75rem 0 0; padding: 0; }
+    #playlist li {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 0.25rem;
+      border-bottom: 1px dashed var(--border);
+      font-size: 0.9rem;
+      overflow-wrap: anywhere;
+      cursor: pointer;
+    }
+    #playlist li:last-child { border-bottom: none; }
+    #playlist li:hover { color: var(--accent); }
+    #playlist li.playing { color: var(--accent); font-weight: 600; }
+    #playlist li .pl-remove {
+      margin-left: auto;
+      flex: none;
+      border: 0;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0 0.2rem;
+    }
+    #playlist li .pl-remove:hover { color: var(--error); }
+
+    /* ---------- noscript + footer ---------- */
+    .noscript-banner {
+      max-width: 60rem;
+      margin: 1rem auto 0;
+      padding: 0.9rem 1.25rem;
+      background: var(--card);
+      border: 1px solid var(--error);
+      border-radius: 12px;
+      color: var(--fg);
+      font-size: 0.95rem;
+    }
+    .site-footer {
+      flex-shrink: 0;
+      padding: 1.25rem 1rem 1.75rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .site-footer p { margin: 0 auto; max-width: 46rem; }
+
+    /* ---------- small screens ---------- */
+    @media (max-width: 40rem) {
+      .site-header { padding: 0.6rem 0.85rem; }
+      main { padding: 1rem 0.75rem 1.5rem; }
+      .card { padding: 0.9rem; }
+      #dropzone { padding: 2.5rem 1rem; }
+      .dz-title { font-size: 1.02rem; }
+      .panel-head { flex-direction: column; align-items: stretch; }
+      .panel-actions .btn { flex: 1 1 auto; }
+      .ctl-group { flex-wrap: wrap; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <noscript>
+    <div class="noscript-banner">
+      <strong>JavaScript is disabled.</strong>
+      VLC WASM runs VLC's engine entirely inside your browser using JavaScript and WebAssembly.
+      Please enable JavaScript to play media — your files are never uploaded.
+    </div>
+  </noscript>
+
+  <header class="site-header">
+    <div class="brand">
+      <img src="./icons/icon-32.png" alt="" width="26" height="26">
+      <h1>VLC <em>WASM</em></h1>
+    </div>
+    <div class="header-tools">
+      <span id="net-status" role="status" aria-label="Network status"></span>
+      <span class="version-pill"><span id="build-version">local</span></span>
+      <button id="install-btn" type="button" class="btn primary" hidden>Install app</button>
+    </div>
+  </header>
+
+  <main>
+    <section aria-label="File drop zone">
+      <div id="dropzone" role="button" tabindex="0" aria-label="Drop a media file to play it. Activates a file chooser.">
+        <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <polygon points="6 4 20 12 6 20 6 4"/>
+        </svg>
+        <p class="dz-title">Drop a media file to play it</p>
+        <p class="dz-sub">…or click anywhere in this box to browse. VLC's engine runs locally via WebAssembly — MKV, FLAC, WMV, RM, DVD images, tracker music… your files never leave your device.</p>
+      </div>
+      <input id="file-input" type="file" multiple hidden>
+      <input id="folder-input" type="file" webkitdirectory multiple hidden>
+      <p class="dz-actions">
+        <button id="btn-open" type="button" class="btn" hidden>Open file…</button>
+        <button id="btn-open-folder" type="button" class="btn" hidden>Open folder…</button>
+        <button id="btn-open-url" type="button" class="btn">Open URL…</button>
+      </p>
+    </section>
+
+    <p id="status-line" role="status" aria-live="polite"></p>
+
+    <section id="player-section" class="card" hidden>
+      <div class="panel-head">
+        <h2>Now playing: <span id="media-name"></span></h2>
+        <div class="panel-actions">
+          <button id="btn-prev" type="button" class="btn" aria-label="Previous in playlist" disabled>⏮</button>
+          <button id="btn-play" type="button" class="btn primary" aria-label="Play or pause">⏸</button>
+          <button id="btn-next" type="button" class="btn" aria-label="Next in playlist" disabled>⏭</button>
+          <button id="btn-stop" type="button" class="btn">Stop</button>
+        </div>
+      </div>
+
+      <div id="player-stage">
+        <canvas id="video-canvas" aria-label="Video output"></canvas>
+        <div id="player-overlay" role="status"></div>
+      </div>
+
+      <div id="controls">
+        <span class="ctl-time" id="time-elapsed">0:00</span>
+        <div class="grow"><input id="seek-bar" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek position"></div>
+        <span class="ctl-time" id="time-total">0:00</span>
+        <div class="ctl-group">
+          <label class="btn" for="audio-track" style="padding:.35rem .6rem;font-size:.8rem" hidden id="audio-track-label">Audio</label>
+          <select id="audio-track" class="btn" style="padding:.35rem .6rem;font-size:.8rem" aria-label="Audio track" hidden></select>
+          <label class="btn" for="subtitle-track" style="padding:.35rem .6rem;font-size:.8rem" hidden id="subtitle-track-label">Subs</label>
+          <select id="subtitle-track" class="btn" style="padding:.35rem .6rem;font-size:.8rem" aria-label="Subtitle track" hidden></select>
+          <input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume" style="width:6rem">
+          <button id="btn-mute" type="button" class="btn" style="padding:.35rem .6rem" aria-label="Mute">🔊</button>
+          <button id="btn-fullscreen" type="button" class="btn" style="padding:.35rem .6rem" aria-label="Fullscreen">⛶</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="playlist-section" class="card" hidden>
+      <div class="panel-head">
+        <h2>Playlist</h2>
+        <div class="panel-actions"><button id="btn-clear-playlist" type="button" class="btn">Clear</button></div>
+      </div>
+      <ol id="playlist"></ol>
+    </section>
+
+    <section id="info-panel" class="card" hidden>
+      <div class="panel-head">
+        <h2>Media info</h2>
+        <button id="btn-info" type="button" class="btn">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Type</th>
+              <th scope="col">Codec</th>
+              <th scope="col">Language</th>
+              <th scope="col">Details</th>
+            </tr>
+          </thead>
+          <tbody id="info-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-label="Engine log">
+      <h2>Log</h2>
+      <pre id="progress-output" role="log" aria-live="polite" aria-relevant="additions" spellcheck="false"></pre>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>VLC is a trademark of VideoLAN. This site runs VLC 4's engine entirely in your browser via WebAssembly — your files never leave your device.</p>
+  </footer>
+
+  <!-- Classic script so coi.js stays first; the app itself is a module. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

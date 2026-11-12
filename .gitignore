@@ -1,0 +1,12 @@
+# Build output — CI generates it; drop local builds here for dev.
+wasm/
+site-publish/
+wasm-stage/
+.vlc-build/
+.build/
+emsdk-cache/
+node_modules/
+vlc/
+
+# The engine's generated module table is a build intermediate.
+vlc-modules.c
