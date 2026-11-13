@@ -50,8 +50,9 @@ here is feature-detected; browsers without support keep the dropzone:
 
 ## How publishing works
 
-`.github/workflows/publish.yml` runs **every Monday 04:00 UTC** (and on
-demand):
+`.github/workflows/publish.yml` runs **on every push to `main`** (README- and
+tests-only commits are ignored — they never reach the site), **every Monday
+04:00 UTC** (to pick up new VLC commits), and on demand:
 
 1. Resolves the head of VLC master (or a commit you specify via
    `workflow_dispatch`) and checks it out

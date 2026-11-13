@@ -1,6 +1,16 @@
 name: Build & Publish VLC WASM
 
 on:
+  push:
+    branches: [main]
+    # Files that never reach the deployed site: rebuilding + redeploying on a
+    # docs/tests-only commit would just redeploy byte-identical assets under a
+    # new cache version, spinning clients' caches for nothing. Everything that
+    # ships (or shapes what ships — .github/, native/, patches/) still runs.
+    paths-ignore:
+      - 'README.md'
+      - 'tests/**'
+      - '.*'
   schedule:
     - cron: '0 4 * * 1' # every Monday 04:00 UTC
   workflow_dispatch:

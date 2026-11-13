@@ -45,6 +45,9 @@ function section(t) { console.log('\n== ' + t + ' =='); }
 section('publish.yml: the weekly pipeline');
 {
   const wf = read('.github/workflows/publish.yml');
+  check('runs on push to main', /push:\s*\n\s*branches: \[main\]/.test(wf), '');
+  check('push ignores files that never reach the site (README, tests/, dotfiles)',
+    /paths-ignore:[\s\S]*?- 'README\.md'[\s\S]*?- 'tests\/\*\*'[\s\S]*?- '\.\*'/.test(wf), '');
   check('schedules Monday 04:00 UTC', /cron: '0 4 \* \* 1'/.test(wf), '');
   check('also runs on workflow_dispatch', /workflow_dispatch:/.test(wf), '');
   check('workflow_dispatch accepts a vlc_commit input', /vlc_commit:/.test(wf), '');
