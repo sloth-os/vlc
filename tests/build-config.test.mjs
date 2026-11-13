@@ -87,6 +87,13 @@ section('build-vlc.sh: the wasm build');
   const sh = read('.github/scripts/build-vlc.sh');
   check('requires VLC_SRC', /\$\{VLC_SRC:\?/.test(sh), '');
   check('applies patches idempotently (reverse-check first)', /git apply -R --check/.test(sh), '');
+  // The contribs cache stores stamp files (contrib-emscripten/.python-venv)
+  // but not contrib/python-venv itself — a restored cache would skip the venv
+  // creation and pip3 installs then die with Error 127 (markupsafe/jinja/glad).
+  check('drops the stale .python-venv stamp when the venv is missing (cache-restore lie)',
+    /if \[ ! -x contrib\/python-venv\/bin\/pip3 \]; then[\s\S]*?rm -rf contrib\/python-venv[\s\S]*?rm -f contrib\/contrib-\*\/\.python-venv/.test(sh), '');
+  check('the venv guard runs BEFORE the contrib build',
+    sh.indexOf('contrib/python-venv/bin/pip3') < sh.indexOf('extras/package/wasm-emscripten/build.sh --mode=1'), '');
   check('skips the dvdcss patch by number (never distributed)', /SKIP_PATCHES="0030 "/.test(sh), '');
   check('threads the wasm flags into VLC_CFLAGS (contribs compatibility)',
     /WASM_FLAGS="-msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"/.test(sh) && /VLC_CFLAGS="\$OPT_FLAGS \$WASM_FLAGS"/.test(sh), '');

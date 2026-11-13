@@ -107,6 +107,16 @@ sed -i 's/ --disable-sidplay2//' "$UP"
 sed -i 's/ --disable-flac//; s/ --disable-theora//; s/ --disable-spatialaudio//' "$UP"
 
 step "running extras/package/wasm-emscripten/build.sh (mode 1)"
+# The contribs cache restores stamp files (contrib-emscripten/.python-venv)
+# but NOT the venv itself: contrib/python-venv lives outside every cached
+# directory. A run that reinstalls any Python-based contrib (markupsafe,
+# jinja, glad) then executes pip3 out of the missing venv and dies with
+# "Error 127" while the stamp claims it exists. Drop the lying stamp (and
+# any half-made venv) so make recreates it — seconds, versus a dead build.
+if [ ! -x contrib/python-venv/bin/pip3 ]; then
+  rm -rf contrib/python-venv
+  rm -f contrib/contrib-*/.python-venv
+fi
 sh extras/package/wasm-emscripten/build.sh --mode=1
 
 # ------------------------------------------------------------------- link ---
