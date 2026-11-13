@@ -37,6 +37,9 @@ function createWorld({
   // activeOnly: reg.active exists but navigator.serviceWorker.controller does
   // not — the first-visit case (the worker ran before this page loaded).
   activeAndControlled = false, activeOnly = false,
+  // installingInFlight: reg.installing is already set when register() resolves
+  // (a retry install that began during page load, its updatefound long gone).
+  installingInFlight = false,
 } = {}) {
   const world = {
     reloads: 0,
@@ -50,12 +53,12 @@ function createWorld({
   }
   // A minimal serviceWorker registration object.
   const makeRegistration = () => {
-       const reg = {
+    const reg = {
       active: (activeAndControlled || activeOnly) ? {} : null,
       listeners: {},
       addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); },
     };
-    world.fireUpdateFound = () => {
+    world.fireUpdateFound = (finalState = 'activated') => {
       const installing = {
         listeners: {},
         addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); },
@@ -63,10 +66,22 @@ function createWorld({
       };
       reg.installing = installing;
       (reg.listeners.updatefound ?? []).forEach((fn) => fn());
-      // then it activates:
-      installing.state = 'activated';
+      // then it settles into the given state:
+      installing.state = finalState;
       (installing.listeners.statechange ?? []).forEach((fn) => fn({ target: installing }));
     };
+    if (installingInFlight) {
+      const inFlight = {
+        listeners: {},
+        addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); },
+        state: 'installing',
+      };
+      reg.installing = inFlight;
+      world.fireInstallingState = (finalState) => {
+        inFlight.state = finalState;
+        (inFlight.listeners.statechange ?? []).forEach((fn) => fn({ target: inFlight }));
+      };
+    }
     return reg;
   };
   const sandbox = {
@@ -183,6 +198,64 @@ section('no reload loop');
   w.world.fireUpdateFound?.();
   await flush();
   check('updatefound -> activated: reloads once', w.world.reloads === 1, String(w.world.reloads));
+}
+
+section('install-failure recovery (redundant worker)');
+{
+  // A retry install that FAILS: the worker goes 'redundant', the previous
+  // worker keeps controlling the page. coi.js must still reload once — the
+  // stale worker serves the COI headers, so the reload gets isolation.
+  const w = createWorld({});
+  w.load();
+  await flush();
+  check('redundant preconditions: no reload yet', w.world.reloads === 0, String(w.world.reloads));
+  w.world.fireUpdateFound?.('redundant');
+  await flush();
+  check('redundant install: reloads once (stale worker recovers the page)',
+    w.world.reloads === 1, String(w.world.reloads));
+  w.world.fireUpdateFound?.('redundant');
+  await flush();
+  check('redundant install: the marker still prevents a second reload',
+    w.world.reloads === 1, String(w.world.reloads));
+}
+{
+  // Same failure but the session is already marked: warn only, never loop.
+  const w = createWorld({});
+  w.world.storage.set('vlc-web-coi-reloaded', '1');
+  w.load();
+  await flush();
+  w.world.fireUpdateFound?.('redundant');
+  await flush();
+  check('redundant install on a marked session: no second reload, a warning instead',
+    w.world.reloads === 0 && w.world.warnings.some((m) => /not cross-origin isolated/.test(m)),
+    JSON.stringify({ reloads: w.world.reloads, warnings: w.world.warnings }));
+}
+
+section('install already in flight when register() resolves');
+{
+  // The browser began a retry install DURING page load (after an earlier
+  // failed attempt): updatefound has already fired by the time register()
+  // resolves, so only reg.installing can be tracked. Missing that worker
+  // would dead-end the session (no reload, no isolation).
+  const w = createWorld({ installingInFlight: true });
+  w.load();
+  await flush();
+  check('in-flight install: no reload before the worker settles', w.world.reloads === 0,
+    String(w.world.reloads));
+  w.world.fireInstallingState?.('activated');
+  await flush();
+  check('in-flight install: its activation still reloads once',
+    w.world.reloads === 1, String(w.world.reloads));
+}
+{
+  // The in-flight install FAILS instead: redundant must fire the same reload.
+  const w = createWorld({ installingInFlight: true });
+  w.load();
+  await flush();
+  w.world.fireInstallingState?.('redundant');
+  await flush();
+  check('in-flight install failing: redundant still reloads once',
+    w.world.reloads === 1, String(w.world.reloads));
 }
 
 section('storage blocked / registration failure');

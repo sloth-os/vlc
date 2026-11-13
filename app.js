@@ -75,15 +75,52 @@ async function loadBuildInfo() {
 }
 
 // --------------------------------------------------------- engine boot ---
+// The engine needs the page to be cross-origin isolated (SharedArrayBuffer).
+// On a first visit the service worker that injects the COOP/COEP headers is
+// still installing when this module runs; coi.js reloads the page once it is
+// active. Rather than erroring mid-install, WAIT for that handoff: register
+// returns the registration coi.js already started, so this doubles as its
+// progress signal.
+async function waitForIsolation(timeoutMs) {
+  if (window.crossOriginIsolated) return true;
+  if (!window.isSecureContext || !('serviceWorker' in navigator)) return false;
+  try {
+    await navigator.serviceWorker.register('./sw.js');
+    if (navigator.serviceWorker.controller) {
+      // The worker controls the page but isolation still false: its headers
+      // are only served to the NEXT load. The coi.js reload handles that; a
+      // further wait here cannot help.
+      return window.crossOriginIsolated;
+    }
+    // The worker is not controlling the page yet: wait for it (or the
+    // timeout, so a wedged install cannot hang the boot forever).
+    await new Promise((resolve) => {
+      const timer = setTimeout(finish, timeoutMs);
+      function finish() {
+        clearTimeout(timer);
+        navigator.serviceWorker.removeEventListener('controllerchange', finish);
+        resolve();
+      }
+      navigator.serviceWorker.addEventListener('controllerchange', finish);
+    });
+    return window.crossOriginIsolated;
+  } catch {
+    return window.crossOriginIsolated;
+  }
+}
+
 async function bootEngine() {
   if (vlc) return vlc;
   booting ??= (async () => {
     setStatus('Starting the VLC engine (downloading ~25 MB of WebAssembly)…');
-    log(`engine: crossOriginIsolated=${window.crossOriginIsolated}`);
     if (!window.crossOriginIsolated) {
-      throw new Error(
-        'This page is not cross-origin isolated, so the engine (SharedArrayBuffer) cannot run. ' +
-        'Reload once so the service worker can add the required headers — or serve with COOP/COEP.');
+      const isolated = await waitForIsolation(10000);
+      log(`engine: crossOriginIsolated=${isolated}`);
+      if (!isolated) {
+        throw new Error(
+          'This page is not cross-origin isolated, so the engine (SharedArrayBuffer) cannot run. ' +
+          'Reload once so the service worker can add the required headers — or serve with COOP/COEP.');
+      }
     }
     const t0 = performance.now();
     vlc = await createVLC({ logLevel: 'warn' });
@@ -489,7 +526,9 @@ consumeSharedFiles();
 
 // Preload the engine as soon as the network is idle, so the first file drop
 // plays immediately. Skipped on saveData/2g and when the SW has not cached
-// the wasm yet AND we are offline (pointless).
+// the wasm yet AND we are offline (pointless). bootEngine() waits for the
+// cross-origin-isolation handoff (coi.js's reload) before downloading, so a
+// first visit no longer errors while the service worker is still installing.
 const conn = navigator.connection;
 const slow = conn && (conn.saveData || /2g/.test(conn.effectiveType || ''));
 if (!slow && (navigator.onLine || window.caches)) {

@@ -17,7 +17,9 @@ server-side processing, works offline after the first visit.
   Workers on a pre-started pool. That needs `SharedArrayBuffer`, so the page
   must be cross-origin isolated: on GitHub Pages (no custom headers) the
   service worker re-serves every response with COOP/COEP headers (`coi.js` +
-  `sw.js`), costing one reload on the first visit.
+  `sw.js`), costing one reload on the first visit. The install precaches only
+  the small app shell, so that reload happens within seconds; the ~25 MB
+  engine downloads lazily on the first boot and is cached then.
 - **Video**: the vout (`native/webframe.c`) copies each decoded frame into
   triple-buffered wasm memory; the page claims the newest buffer per animation
   frame and uploads it as WebGL2 textures (YUV→RGB in the shader, HDR matrices

@@ -3,15 +3,22 @@
  *
  * Two jobs, both of which GitHub Pages makes necessary:
  *
- * 1. OFFLINE APP SHELL. Precaches the app + the wasm engine listed by the
- *    generated sw-manifest.js and serves it cache-first, so the whole site
- *    keeps working offline after the first load.
- *
- * 2. CROSS-ORIGIN ISOLATION. The engine's pthreads need SharedArrayBuffer,
+ * 1. CROSS-ORIGIN ISOLATION. The engine's pthreads need SharedArrayBuffer,
  *    which needs COOP/COEP response headers GitHub Pages cannot send. Every
  *    same-origin response is re-served with those headers (see coi.js, the
  *    page half that registers this worker and reloads once when it takes
- *    control).
+ *    control). This is the TIME-CRITICAL job: install precaches only the
+ *    small app shell, so activation — and with it the COI headers and the
+ *    coi.js reload — lands within a second or two even on slow links, never
+ *    behind the engine download.
+ *
+ * 2. OFFLINE APP SHELL. The shell assets listed by the generated
+ *    sw-manifest.js are precached at install (tolerantly: one flaky fetch
+ *    skips that asset, it never kills the install) and served cache-first.
+ *    The ~26 MB wasm engine under ./wasm/ is deliberately NOT an install
+ *    asset: the first engine boot fetches it through the normal cache-first
+ *    path, which caches it in the same versioned cache. Offline playback
+ *    works from the first visit that ever started the engine once.
  *
  * Every URL here is RELATIVE to this script's own location, so the site works
  * from any GitHub Pages subpath (user.github.io/vlc-web/) and from a plain
@@ -41,6 +48,15 @@ var ASSETS = Array.isArray(self.__SW_ASSETS__) ? self.__SW_ASSETS__.slice() : []
 // location, so they work from any subpath the site is published under.
 var ASSET_URLS = ASSETS.map(function (entry) {
   return new URL(entry, self.location).href;
+});
+// The wasm engine (~26 MB) is NOT an install-time asset. A giant addAll()
+// would hold the install — and with it activation, the COI headers and the
+// coi.js reload — hostage to one long, flaky download, so a first visit
+// could end up permanently unisolated. The engine is cached by the normal
+// cache-first fetch path when the player first boots (see cacheFirstResponse).
+// Same test as the engine: anything under ./wasm/ is deferred.
+var SHELL_URLS = ASSET_URLS.filter(function (url) {
+  return !new URL(url).pathname.split('/').includes('wasm');
 });
 var INDEX_URL = new URL('./index.html', self.location).href;
 var OFFLINE_URL = new URL('./offline.html', self.location).href;
@@ -83,17 +99,46 @@ function requestUrl(request) {
 
 /* ---------------------------------------------------------------- install */
 
+// One asset, fetched with a single retry: a network hiccup costs one extra
+// request, never the install. Non-ok responses and re-thrown failures are
+// tolerated (the asset is simply not cached yet); only the shell needs to
+// install fast and activate — the fetch handler fills gaps at runtime.
+async function precacheOne(cache, url) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch(new Request(url, { cache: 'reload' }));
+      if (response && response.ok && response.status !== 206) {
+        await cache.put(url, response);
+        return true;
+      }
+    } catch (err) {
+      // retried below (or given up on)
+    }
+    if (attempt === 0) {
+      try { await new Promise(function (r) { setTimeout(r, 250); }); } catch { /* timer unavailable: retry at once */ }
+    }
+  }
+  console.warn('[sw] precache miss: ' + url + ' (will be filled at runtime)');
+  return false;
+}
+
 self.addEventListener('install', function (event) {
   event.waitUntil(
     (async function () {
-      if (ASSET_URLS.length === 0) {
+      if (SHELL_URLS.length === 0) {
         // No generated manifest (local dev / broken build): still activate so
         // the worker is never stuck waiting.
         console.warn('[sw] __SW_ASSETS__ is missing or empty — nothing precached');
       } else {
         const cache = await caches.open(CACHE);
-        await cache.addAll(ASSET_URLS);
-        console.log('[sw] precached ' + ASSET_URLS.length + ' assets into ' + CACHE);
+        let ok = 0;
+        // Sequential, not Promise.all: 6 HTTP/1.1 requests at a time is the
+        // browser default anyway, and a burst of parallel fetches on a slow
+        // radio is exactly what starves the page's own requests.
+        for (const url of SHELL_URLS) {
+          if (await precacheOne(cache, url)) ok++;
+        }
+        console.log('[sw] precached ' + ok + '/' + SHELL_URLS.length + ' shell assets into ' + CACHE);
       }
       await self.skipWaiting();
     })()
@@ -126,8 +171,12 @@ function withCoiHeaders(response) {
   if (!response || response.status === 0) return response;
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  // credentialless lets cross-origin images/media load without CORP headers.
-  headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
+  // require-corp, not credentialless: credentialless is not supported by
+  // Safari (any version) or Firefox on Android, so it would leave those
+  // browsers permanently unisolated. This site loads no cross-origin
+  // no-cors subresources (the engine fetches remote media via CORS-gated
+  // XHR from inside the worker), so require-corp blocks nothing here.
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
   return new Response(response.body, {
     status: response.status,

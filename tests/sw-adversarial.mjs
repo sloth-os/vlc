@@ -650,7 +650,7 @@ const CACHE_V2 = 'vlc-web-26.06-2026-11-09T04:00:00Z';
 const sharedStore = new Map();
 
 {
-  // --- v1 install + activate ------------------------------------------------
+  // --- v1 install + activate + first engine boot -----------------------------
   const w1 = createWorld({ manifest: V1, store: sharedStore });
   goOnlineMap(w1, {
     [abs('./index.html')]: 'INDEX-V1',
@@ -673,9 +673,18 @@ const sharedStore = new Map();
   const inst1 = fireLifecycle(w1, 'install');
   const r1 = await settled(inst1.done);
   check('(a) v1 install resolved', r1.ok, r1.detail || '');
-  check('(a) v1 cache created with exactly the 3 assets',
-    sharedStore.has(CACHE_V1) && sharedStore.get(CACHE_V1).entries.size === 3,
+  // The engine is NOT an install asset: only the 2 shell files were precached.
+  check('(a) v1 cache created with exactly the 2 shell assets (engine excluded)',
+    sharedStore.has(CACHE_V1) && sharedStore.get(CACHE_V1).entries.size === 2,
     cacheNames(w1).join(','));
+  // First engine boot on v1: the runtime cache-first path pulls the wasm.
+  const v1Wasm = fireFetch(w1, makeRequest(abs('./wasm/libvlc.wasm')));
+  const v1WasmRes = await settledResponse(v1Wasm);
+  check('(a) v1 first engine boot fetched the wasm bytes over the network',
+    v1WasmRes.ok && v1WasmRes.body === 'WASM-BYTES-V1', v1WasmRes.ok ? v1WasmRes.body : v1WasmRes.detail);
+  check('(a) v1 cache then holds the runtime-cached wasm',
+    sharedStore.get(CACHE_V1).entries.get(abs('./wasm/libvlc.wasm')) !== undefined,
+    'keys=' + [...sharedStore.get(CACHE_V1).entries.keys()].join(','));
   const act1 = fireLifecycle(w1, 'activate');
   await act1.done;
   check('(a) v1 activate kept its own cache', sharedStore.has(CACHE_V1));
@@ -696,7 +705,21 @@ const sharedStore = new Map();
   check('(a) v2 cache exists after install', sharedStore.has(CACHE_V2));
   check('(a) v1 cache still present before v2 activate (old SW still serving)',
     sharedStore.has(CACHE_V1));
-  check('(a) v2 cache holds the NEW wasm bytes', (() => {
+  // v2 install precached the shell with the NEW bytes...
+  check('(a) v2 cache holds the NEW index.html bytes', (() => {
+    const entry = sharedStore.get(CACHE_V2).entries.get(abs('./index.html'));
+    return !!entry && Buffer.from(entry.body).toString() === 'INDEX-V2';
+  })());
+  // ...and did NOT touch the engine: no wasm fetch at install time.
+  check('(a) v2 install never fetched the wasm (engine is a runtime asset)',
+    !w2.fetchCalls.some((u) => u.endsWith('/wasm/libvlc.wasm')),
+    'fetches=' + w2.fetchCalls.join(','));
+  // The v2 first engine boot caches the NEW wasm bytes.
+  const v2Wasm = fireFetch(w2, makeRequest(abs('./wasm/libvlc.wasm')));
+  const v2WasmRes = await settledResponse(v2Wasm);
+  check('(a) v2 first engine boot serves the NEW wasm bytes',
+    v2WasmRes.ok && v2WasmRes.body === 'WASM-BYTES-V2', v2WasmRes.ok ? v2WasmRes.body : v2WasmRes.detail);
+  check('(a) v2 cache holds the NEW wasm bytes after the runtime fill', (() => {
     const entry = sharedStore.get(CACHE_V2).entries.get(abs('./wasm/libvlc.wasm'));
     return !!entry && Buffer.from(entry.body).toString() === 'WASM-BYTES-V2';
   })());
@@ -731,9 +754,9 @@ const sharedStore = new Map();
   check('(a) offline after rollover: zero network calls', w2.fetchCalls.length === before);
 }
 
-/* ============================ (b) addAll rejection: clean install failure == */
+/* ==================== (b) per-asset failure: tolerant install, no orphan === */
 
-section('(b) install with a 404 asset: waitUntil rejects, no skipWaiting, nothing half-cached');
+section('(b) install with a 404 shell asset: resolves, skips waiting, fills at runtime');
 
 {
   const B_ASSETS = ['./index.html', './offline.html', './wasm/libvlc.wasm', './icons/icon-192.png'];
@@ -747,15 +770,31 @@ section('(b) install with a 404 asset: waitUntil rejects, no skipWaiting, nothin
   w.load();
   const inst = fireLifecycle(w, 'install');
   const r = await settled(inst.done);
-  check('(b) install waitUntil promise REJECTS when one asset 404s', !r.ok);
-  check('(b) skipWaiting NOT called after failed install', w.skipWaitingCalls === 0, 'calls=' + w.skipWaitingCalls);
-  check('(b) cache.put never called (no half-caching)', w.putCalls.length === 0, w.putCalls.join(','));
-  check('(b) zero entries across all caches after failed install', totalEntries(w) === 0, 'entries=' + totalEntries(w));
-  check('(b) no success log emitted', !w.logs.some((l) => /precached/.test(l)));
-  check('(b) all 4 assets were attempted over the network', w.fetchCalls.length === 4, 'fetches=' + w.fetchCalls.length);
+  check('(b) install waitUntil promise RESOLVES when a shell asset 404s', r.ok, r.detail || '');
+  check('(b) skipWaiting still called (activation must not be blocked)', w.skipWaitingCalls === 1, 'calls=' + w.skipWaitingCalls);
+  check('(b) only the fetchable assets are cached (no 404 body persisted)',
+    w.putCalls.length === 2 &&
+    [abs('./index.html'), abs('./offline.html')].every((u) => w.putCalls.includes(u)),
+    'puts=' + w.putCalls.join(','));
+  check('(b) a partial shell beats a dead install (2 entries kept)', totalEntries(w) === 2, 'entries=' + totalEntries(w));
+  check('(b) the 404 is reported, the success log still counts honestly',
+    w.warnings.some((l) => /precache miss/.test(l)) && w.logs.some((l) => /precached 2\/3 shell assets/.test(l)),
+    JSON.stringify({ warnings: w.warnings, logs: w.logs }));
+  check('(b) the failed asset was attempted exactly twice (1 try + 1 retry)',
+    w.fetchCalls.filter((u) => u.endsWith('/icons/icon-192.png')).length === 2,
+    'fetches=' + w.fetchCalls.join(','));
+  check('(b) the engine was never fetched at install (runtime asset)',
+    !w.fetchCalls.some((u) => u.endsWith('/wasm/libvlc.wasm')), 'fetches=' + w.fetchCalls.join(','));
+  // Runtime fill: the 404'd asset serves once the network has it.
+  const refillMap = { [abs('./icons/icon-192.png')]: 'B-ICON-RECOVERED' };
+  goOnlineMap(w, refillMap);
+  const refill = fireFetch(w, makeRequest(abs('./icons/icon-192.png')));
+  const refillRes = await settledResponse(refill);
+  check('(b) the asset that 404\'d at install still serves at runtime',
+    refillRes.ok && refillRes.body === 'B-ICON-RECOVERED', refillRes.ok ? refillRes.body : refillRes.detail);
 }
 
-section('(b2) install while fully offline: rejects cleanly too');
+section('(b2) install while fully offline: resolves, activates, refills later');
 
 {
   const w = createWorld({ manifest: manifestSource('b2-ver', ['./index.html', './offline.html']) });
@@ -763,9 +802,20 @@ section('(b2) install while fully offline: rejects cleanly too');
   w.load();
   const inst = fireLifecycle(w, 'install');
   const r = await settled(inst.done);
-  check('(b2) offline install rejects', !r.ok);
-  check('(b2) offline install did not skipWaiting', w.skipWaitingCalls === 0);
+  check('(b2) offline install still resolves (activation > precache)', r.ok, r.detail || '');
+  check('(b2) offline install still calls skipWaiting', w.skipWaitingCalls === 1);
   check('(b2) offline install cached nothing', totalEntries(w) === 0);
+  check('(b2) each asset was attempted twice (1 try + 1 retry) while offline',
+    w.fetchCalls.length === 4, 'fetches=' + w.fetchCalls.join(','));
+  const act = fireLifecycle(w, 'activate');
+  const ra = await settled(act.done);
+  check('(b2) activate runs and claims after the offline install', ra.ok && w.claimCalls === 1);
+  // Back online: the runtime path fills the shell.
+  goOnlineEcho(w);
+  const nav = fireFetch(w, makeRequest(SITE_BASE, { mode: 'navigate' }));
+  const navRes = await settledResponse(nav);
+  check('(b2) back online, the navigation serves from the network',
+    navRes.ok && navRes.body.startsWith('NET '), navRes.ok ? navRes.body : navRes.detail);
 }
 
 /* ================================ (c) missing __SW_ASSETS__ dev guard ===== */

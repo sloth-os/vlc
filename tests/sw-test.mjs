@@ -7,7 +7,8 @@
  * real Request/Response/Headers/URL/FormData/Blob, then fires install /
  * activate / fetch events and asserts the contract:
  *
- *   - install precaches every __SW_ASSETS__ entry and calls skipWaiting
+ *   - install precaches every __SW_ASSETS__ entry EXCEPT ./wasm/* (the engine
+ *     is runtime-cached), tolerates per-asset failures, and calls skipWaiting
  *     (also when the generated manifest is absent)
  *   - activate deletes stale caches (keeping the fixed-name shared-file cache)
  *     and calls clients.claim
@@ -268,7 +269,7 @@ function makeRequest(url, { method = 'GET', mode = 'cors', headers } = {}) {
 
 /* ------------------------------------------------------------- mock world */
 
-function createWorld({ manifestAvailable = true } = {}) {
+function createWorld({ manifestAvailable = true, manifestPath = FIXTURE_MANIFEST } = {}) {
   const world = {
     listeners: new Map(),
     store: new Map(), // cache name -> MockCache
@@ -321,7 +322,7 @@ function createWorld({ manifestAvailable = true } = {}) {
         if (!manifestAvailable) {
           throw new Error('Failed to load ' + url + ' (404)');
         }
-        vm.runInContext(fs.readFileSync(FIXTURE_MANIFEST, 'utf8'), world.ctx, { filename: String(url) });
+        vm.runInContext(fs.readFileSync(manifestPath, 'utf8'), world.ctx, { filename: String(url) });
       }
     },
     skipWaiting: async () => {
@@ -629,7 +630,11 @@ if (manifest) {
 
 /* =============================================================== install == */
 
-section('install: precache every __SW_ASSETS__ entry, then skipWaiting');
+section('install: precache the shell (engine excluded), then skipWaiting');
+
+// The shell subset of FIXTURE_ASSETS: everything EXCEPT ./wasm/* (the ~26 MB
+// engine is cached at runtime by the first engine boot, not at install).
+const SHELL_ASSETS = FIXTURE_ASSETS.filter((a) => !a.startsWith('./wasm/'));
 
 const world = createWorld();
 world.load();
@@ -651,23 +656,76 @@ const install = fireLifecycle(world, 'install');
 const installResult = await settled(install.done);
 check('install waitUntil() promise resolved', installResult.ok,
   installResult.ok ? '' : String(installResult.error && installResult.error.message));
-check('install fetched each asset exactly once',
-  world.fetchCount() === FIXTURE_ASSETS.length, 'fetchCalls=' + world.fetchCount());
+check('install fetched each shell asset exactly once (the engine is never fetched at install)',
+  world.fetchCount() === SHELL_ASSETS.length, 'fetchCalls=' + world.fetchCount());
 check('install opened the versioned cache "' + CACHE + '"', world.store.has(CACHE),
   JSON.stringify([...world.store.keys()]));
 const missingAssets = [];
-for (const asset of FIXTURE_ASSETS) {
+for (const asset of SHELL_ASSETS) {
   if ((await cachedBody(world, CACHE, asset)) === undefined) missingAssets.push(asset);
 }
-check('install precached every fixture asset ("./x" resolved against ' + SITE_BASE + ')',
+check('install precached every shell asset ("./x" resolved against ' + SITE_BASE + ')',
   missingAssets.length === 0, 'missing=' + JSON.stringify(missingAssets));
 const precachedUrls = [...(world.store.get(CACHE) || { entries: new Map() }).entries.keys()];
 check('precached keys are absolute same-origin URLs under the site subpath',
-  precachedUrls.length === FIXTURE_ASSETS.length &&
+  precachedUrls.length === SHELL_ASSETS.length &&
   precachedUrls.every((u) => u.startsWith(SITE_BASE)), JSON.stringify(precachedUrls));
+check('install did NOT precache the wasm engine (a runtime-cached asset)',
+  precachedUrls.every((u) => !u.endsWith('.wasm')),
+  'wasm keys=' + JSON.stringify(precachedUrls.filter((u) => u.endsWith('.wasm'))));
 check('install called skipWaiting exactly once', world.skipWaitingCalls === 1,
   'calls=' + world.skipWaitingCalls);
 check('install did not call clients.claim', world.claimCalls === 0);
+
+/* ------------------------------- install resilience: shell assets 404 off == */
+
+section('install resilience: a failing shell asset never kills the install');
+
+{
+  // Custom manifest with four shell assets, two of which 404 (unmapped).
+  const R_VERSION = 'res-ver';
+  const R_ASSETS = ['./index.html', './offline.html', './app.js', './icons/icon-192.png'];
+  const R_MANIFEST = path.join(FIXTURE_DIR, 'res-manifest.js');
+  fs.writeFileSync(R_MANIFEST,
+    'self.__SW_VERSION__ = ' + JSON.stringify(R_VERSION) + ';\n' +
+    'self.__SW_ASSETS__ = ' + JSON.stringify(R_ASSETS) + ';\n');
+
+  const w = createWorld({ manifestPath: R_MANIFEST });
+  // ./app.js and ./icons/icon-192.png 404 only DURING install; afterwards the
+  // network has them (a transient failure, not a permanently missing file).
+  const down = new Set([SITE_BASE + 'app.js', SITE_BASE + 'icons/icon-192.png']);
+  let installPhase = true;
+  goOnline(w, async (url) => {
+    if (down.has(url) && installPhase) {
+      return new Response('NOT FOUND', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+    if (url === SITE_BASE + 'index.html') return new Response('R-INDEX', { status: 200, headers: { 'Content-Type': 'text/html' } });
+    return new Response('R-' + url, { status: 200, headers: { 'Content-Type': 'text/plain' } });
+  });
+  w.load();
+  const inst = fireLifecycle(w, 'install');
+  const r = await settled(inst.done);
+  installPhase = false;
+  check('install resolves even when shell assets 404', r.ok,
+    r.ok ? '' : String(r.error && r.error.message));
+  check('skipWaiting still called after a partial shell precache', w.skipWaitingCalls === 1,
+    'calls=' + w.skipWaitingCalls);
+  check('the two fetchable shell assets are cached', w.store.get('vlc-web-' + R_VERSION).entries.size === 2,
+    'entries=' + [...w.store.get('vlc-web-' + R_VERSION).entries.keys()].join(','));
+  check('the two 404 assets were retried once each (2 shell puts from 4+2 fetches)',
+    w.fetchCount() === 6, 'fetches=' + w.fetchCount());
+  const act = fireLifecycle(w, 'activate');
+  await settled(act.done);
+  check('activate + clients.claim still runs after a partial install', w.claimCalls === 1,
+    'claims=' + w.claimCalls);
+  // A precache-miss asset is served by the runtime cache-first path on demand.
+  const refill = await respondInfo(fireFetch(w, makeRequest(SITE_BASE + 'app.js')));
+  check('a shell asset that failed to precache still serves at runtime',
+    refill.ok && refill.body === 'R-' + SITE_BASE + 'app.js', refill.ok ? refill.body : refill.detail);
+  check('the runtime fill cached the previously-missed asset',
+    (await cachedBody(w, 'vlc-web-' + R_VERSION, './app.js')) === 'R-' + SITE_BASE + 'app.js',
+    String(await cachedBody(w, 'vlc-web-' + R_VERSION, './app.js')));
+}
 
 /* ======================= install guard: generated manifest file missing === */
 
@@ -1141,7 +1199,7 @@ section('end-to-end: install -> activate -> fully offline browsing');
 
 const e2e = createWorld();
 e2e.load();
-goOnline(e2e, async (url) => {
+const e2eNet = async (url) => {
   if (url.endsWith('/index.html')) {
     return new Response('REAL INDEX', { status: 200, headers: { 'Content-Type': 'text/html' } });
   }
@@ -1149,13 +1207,14 @@ goOnline(e2e, async (url) => {
     return new Response('REAL OFFLINE', { status: 200, headers: { 'Content-Type': 'text/html' } });
   }
   return new Response('ASSET ' + url, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
-});
+};
+goOnline(e2e, e2eNet);
 const e2eInstall = await settled(fireLifecycle(e2e, 'install').done);
 check('e2e install resolved', e2eInstall.ok, e2eInstall.ok ? '' : String(e2eInstall.error));
 const e2eActivate = await settled(fireLifecycle(e2e, 'activate').done);
 check('e2e activate resolved', e2eActivate.ok, e2eActivate.ok ? '' : String(e2eActivate.error));
-check('e2e cache holds all ' + FIXTURE_ASSETS.length + ' assets after install',
-  e2e.store.get(CACHE).entries.size === FIXTURE_ASSETS.length,
+check('e2e cache holds all ' + SHELL_ASSETS.length + ' shell assets after install (engine deferred)',
+  e2e.store.get(CACHE).entries.size === SHELL_ASSETS.length,
   'entries=' + e2e.store.get(CACHE).entries.size);
 
 goOffline(e2e);
@@ -1163,8 +1222,19 @@ e2e.resetFetchCalls();
 const e2eNav = await respondInfo(fireFetch(e2e, makeRequest(SITE_BASE + 'index.html?fresh=1', { mode: 'navigate' })));
 check('e2e offline navigation served the precached index.html',
   e2eNav.ok && e2eNav.body === 'REAL INDEX', e2eNav.ok ? JSON.stringify(e2eNav.body) : e2eNav.detail);
+// The engine was NOT precached at install: simulate the first engine boot
+// (a runtime cache-first fetch) while still online, THEN go offline.
+goOnline(e2e, e2eNet);
+e2e.resetFetchCalls();
+const e2eOnlineWasm = await respondInfo(fireFetch(e2e, makeRequest(SITE_BASE + 'wasm/libvlc.wasm')));
+check('e2e first engine boot fetches and caches the wasm through the runtime path',
+  e2eOnlineWasm.ok && e2eOnlineWasm.body === 'ASSET ' + SITE_BASE + 'wasm/libvlc.wasm' &&
+  (await cachedBody(e2e, CACHE, './wasm/libvlc.wasm')) === 'ASSET ' + SITE_BASE + 'wasm/libvlc.wasm',
+  e2eOnlineWasm.ok ? JSON.stringify(e2eOnlineWasm.body) : e2eOnlineWasm.detail);
+goOffline(e2e);
+e2e.resetFetchCalls();
 const e2eWasm = await respondInfo(fireFetch(e2e, makeRequest(SITE_BASE + 'wasm/libvlc.wasm')));
-check('e2e offline request served the precached wasm binary',
+check('e2e offline request served the runtime-cached wasm binary',
   e2eWasm.ok && e2eWasm.body === 'ASSET ' + SITE_BASE + 'wasm/libvlc.wasm',
   e2eWasm.ok ? JSON.stringify(e2eWasm.body) : e2eWasm.detail);
 const e2eWorker = await respondInfo(fireFetch(e2e, makeRequest(SITE_BASE + 'worker.js')));
@@ -1191,8 +1261,8 @@ section('cross-origin isolation: every same-origin response carries COOP/COEP');
     check(`${label}: answered with COOP: same-origin`,
       info.headers?.get('cross-origin-opener-policy') === 'same-origin',
       String(info.headers?.get('cross-origin-opener-policy')));
-    check(`${label}: answered with COEP: credentialless`,
-      info.headers?.get('cross-origin-embedder-policy') === 'credentialless',
+    check(`${label}: answered with COEP: require-corp`,
+      info.headers?.get('cross-origin-embedder-policy') === 'require-corp',
       String(info.headers?.get('cross-origin-embedder-policy')));
     check(`${label}: answered with CORP: cross-origin`,
       info.headers?.get('cross-origin-resource-policy') === 'cross-origin',

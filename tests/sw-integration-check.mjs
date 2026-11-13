@@ -179,12 +179,21 @@ check('install against the REAL generated manifest resolved', installError === n
   installError ? installError.message : '');
 check('install created cache "' + CACHE + '"', store.has(CACHE), JSON.stringify([...store.keys()]));
 const cache = store.get(CACHE);
+// The shell subset: everything the install should have precached. The wasm
+// engine under ./wasm/ is deliberately deferred to the runtime cache-first
+// path (first engine boot), so it must NOT be here.
+const shellAssets = assets.filter((a) => !a.startsWith('./wasm/'));
 const missing = [];
-for (const asset of assets) {
+for (const asset of shellAssets) {
   const url = new URL(asset, SITE_BASE).href;
   if (!cache || !(await cache.match(url))) missing.push(asset);
 }
-check('install precached all ' + assets.length + ' generated assets', missing.length === 0, JSON.stringify(missing));
+check('install precached all ' + shellAssets.length + ' generated shell assets', missing.length === 0, JSON.stringify(missing));
+check('install did NOT precache the wasm engine (deferred to the first engine boot)',
+  !(await cache.match(SITE_BASE + 'wasm/libvlc.wasm')),
+  'wasm cached at install time');
+check('install never fetched the wasm binary', !fetchCalls.some((f) => String(typeof f === 'string' ? f : f.url).endsWith('/wasm/libvlc.wasm')),
+  'wasm fetched at install time');
 check('install called skipWaiting', skipWaitingCalls === 1);
 
 const activateP = [];
@@ -197,6 +206,15 @@ check('activate resolved and claimed clients', activateError === null && claimCa
   activateError ? activateError.message : 'claimCalls=' + claimCalls);
 
 /* ---------------------------------------- offline navigation + wasm serving */
+// First engine boot while ONLINE: the runtime cache-first path must fetch and
+// cache the real wasm binary through the real generated manifest world.
+fetchCalls.length = 0;
+const bootWasmRes = await fire(new Request(SITE_BASE + 'wasm/libvlc.wasm'));
+const bootWasmBody = new Uint8Array(await bootWasmRes.arrayBuffer());
+check('first engine boot: the wasm binary served over the network',
+  bootWasmRes.status === 200 && Buffer.from(bootWasmBody).equals(fs.readFileSync(path.join(SITE, 'wasm/libvlc.wasm'))),
+  'status=' + bootWasmRes.status);
+
 fetchCalls.length = 0;
 const offlineFetch = () => { throw new TypeError('Failed to fetch (offline)'); };
 sandbox.fetch = (...args) => { fetchCalls.push(args[0]); return Promise.resolve().then(offlineFetch); };

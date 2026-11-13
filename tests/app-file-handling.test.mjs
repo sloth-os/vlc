@@ -125,6 +125,7 @@ function createWorld() {
     installPrompts: [],
     storage: new Map(),
     idleCallbacks: [],
+    swRegistrations: 0,
   };
   const fakeVLC = world.vlcFactory;
 
@@ -167,6 +168,17 @@ function createWorld() {
       onLine: true,
       connection: null,
       hardwareConcurrency: 4,
+      serviceWorker: {
+        controller: null,
+        register: async () => {
+          world.swRegistrations++;
+          return {};
+        },
+        // controllerchange listeners: waitForIsolation waits on this signal.
+        listeners: [],
+        addEventListener(type, fn) { if (type === 'controllerchange') this.listeners.push(fn); },
+        removeEventListener() {},
+      },
  },
     performance: { now: () => 0 },
     location: { href: 'https://x.io/vlc-web/', reload: () => {} },
@@ -189,6 +201,7 @@ function createWorld() {
   sandbox.removeEventListener = () => {};
   sandbox.windowListeners = windowListeners;
   Object.defineProperty(sandbox, 'crossOriginIsolated', { value: true, configurable: true });
+  sandbox.isSecureContext = true; // waitForIsolation gates on this
 
   // launchQueue: the consumer app.js installs (checked on WINDOW, like Chrome).
   sandbox.launchQueue = { setConsumer: (fn) => { world.launchQueueConsumers.push(fn); } };
@@ -323,6 +336,52 @@ section('share target consumption');
     names.includes('shared-one.flac'), JSON.stringify(names));
   check('the shared cache was emptied after consumption', world.sharedCacheEntries.size === 0,
     JSON.stringify([...world.sharedCacheEntries.keys()]));
+}
+
+section('engine boot waits for the cross-origin-isolation handoff');
+{
+  // A FIRST VISIT: the page is not yet isolated and the SW that injects the
+  // COOP/COEP headers is still installing. bootEngine must WAIT for the
+  // controllerchange (the coi.js reload handoff), not throw instantly — and
+  // never download the engine while the wait is pending.
+  const world = createWorld();
+  Object.defineProperty(world.sandbox, 'crossOriginIsolated', { value: false, configurable: true });
+  world.load();
+  await flush();
+  world.idleCallbacks.forEach((fn) => fn());
+  await flush(5);
+  check('unisolated first visit: bootEngine waits (no engine download yet)',
+    world.vlcFactory.openedFiles.length === 0 && world.swRegistrations === 1,
+    `opens=${world.vlcFactory.openedFiles.length} sw=${world.swRegistrations}`);
+  check('unisolated first visit: no error status painted while waiting',
+    !/not cross-origin isolated/.test(world.dom.get('status-line').textContent),
+    world.dom.get('status-line').textContent);
+  // The worker takes control: isolation lands for the NEXT load; the wait
+  // finishes and the boot proceeds (isolation still false -> the honest error).
+  const swListeners = world.sandbox.navigator.serviceWorker.listeners;
+  check('waitForIsolation subscribed to controllerchange', swListeners.length === 1, String(swListeners.length));
+  for (const fn of swListeners.splice(0)) fn();
+  await flush(20);
+  check('after the wait ends unisolated: the honest error status is painted',
+    /not cross-origin isolated/.test(world.dom.get('status-line').textContent),
+    world.dom.get('status-line').textContent);
+}
+{
+  // The page is controlled but its (pre-SW) headers lack COI: waiting cannot
+  // help — the coi.js reload handles it. The boot must fail fast, not hang.
+  const world = createWorld();
+  Object.defineProperty(world.sandbox, 'crossOriginIsolated', { value: false, configurable: true });
+  world.sandbox.navigator.serviceWorker.controller = {};
+  world.load();
+  await flush();
+  world.idleCallbacks.forEach((fn) => fn());
+  await flush(20);
+  check('controlled-but-unisolated: the error fires without waiting',
+    /not cross-origin isolated/.test(world.dom.get('status-line').textContent),
+    world.dom.get('status-line').textContent);
+  check('controlled-but-unisolated: no controllerchange subscription was left behind',
+    world.sandbox.navigator.serviceWorker.listeners.length === 0,
+    String(world.sandbox.navigator.serviceWorker.listeners.length));
 }
 
 section('install prompt');
