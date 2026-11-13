@@ -164,13 +164,29 @@ section('patches/: the VLC tree patches');
 section('wasm-smoke-test.mjs: the CI gate');
 {
   const st = read('.github/scripts/wasm-smoke-test.mjs');
-  check('boots the engine via the factory export', /factory\(/.test(st) && /\.default/.test(st), '');
+  check('boots the engine through src/engine.js (the production path)',
+    /from '\.\.\/\.\.\/src\/engine\.js'/.test(st) && /createEngine\(/.test(st) && /\.default/.test(st), '');
   check('checks SharedArrayBuffer availability first', /SharedArrayBuffer/.test(st), '');
   check('round-trips the bridge RPC (version)', /call\('version'/.test(st), '');
+  check('accepts the real libvlc version string (semver, not the word VLC)',
+    st.includes('4.0.0-dev Otto') && /!\s*\/\^\\d\+\\\.\\d\+\/\.test\(version\.version\)/.test(st)
+ && !st.includes("includes('VLC')"), '');
   check('creates and releases a player', /player_new/.test(st) && /player_release/.test(st), '');
   check('verifies the ring magic (WVAR)', /0x57564152/.test(st), '');
-  check('never frees the call args after submit (C owns them)', !/finally[\s\S]{0,200}strs\.forEach[\s\S]{0,40}_free/.test(st), '');
-  check('has a timeout on every bridge call', /withTimeout\(call\(/.test(st), '');
+  // Arg marshalling lives in src/engine.js now, so that invariant is checked
+  // against engine.js, not the smoke test.
+  // Universal, not existential: every engine.call( site must sit directly
+  // inside a withTimeout( — the multiline instance_new/player_new calls too.
+  // Whitespace is flattened first so a wrapper split across lines still
+  // counts; plain (st.includes(...)) cannot cross newlines.
+  check('has a timeout on every bridge call (all sites, newline-safe)',
+    (() => {
+      const sites = (st.match(/\bengine\.call\(/g) ?? []).length;
+      const flat = st.replace(/\s+/g, ' ');
+      const wrapped = (flat.match(/withTimeout\(\s*engine\.call\(/g) ?? []).length;
+      return sites > 0 && wrapped === sites;
+    })(), '');
+  check('stops the mailbox pump before exit', /engine\.dispose\(\)/.test(st), '');
 }
 
 console.log('\n' + '-'.repeat(70));

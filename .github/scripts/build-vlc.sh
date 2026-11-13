@@ -183,12 +183,23 @@ emcc -O3 -sASSERTIONS=0 -pthread -msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=w
 # flags only convert what emcc compiles at link time, which would leave a
 # module mixing try and try_table — Safari rejects those. Translate the
 # finished module as a whole instead.
+# wasm-opt is NOT on the PATH emsdk activation sets up (its "releases" tool
+# activates only upstream/emscripten); it lives in emsdk's bin/ next to emcc.
+WASM_OPT=$(dirname "$(command -v emcc)")/../bin/wasm-opt
+if [ ! -x "$WASM_OPT" ] && command -v wasm-opt >/dev/null 2>&1; then
+  WASM_OPT=$(command -v wasm-opt)
+fi
 step "translating exception handling to exnref (try_table)"
-wasm-opt "$STAGE/libvlc.wasm" --translate-to-exnref \
+if [ ! -x "$WASM_OPT" ]; then
+  echo "error: wasm-opt not found (looked in $(dirname "$(command -v emcc)")/../bin and PATH)" >&2
+  exit 1
+fi
+"$WASM_OPT" "$STAGE/libvlc.wasm" --translate-to-exnref \
   --enable-threads --enable-bulk-memory --enable-bulk-memory-opt --enable-exception-handling \
   --enable-simd --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
   --enable-reference-types --enable-multivalue \
-  -o "$STAGE/libvlc.wasm.tmp" && mv "$STAGE/libvlc.wasm.tmp" "$STAGE/libvlc.wasm"
+  -o "$STAGE/libvlc.wasm.tmp"
+mv "$STAGE/libvlc.wasm.tmp" "$STAGE/libvlc.wasm"
 
 # Replace what is served, wasm first: a page loading mid-update must not get a
 # new loader with an old module (that fails with 'Import #0 "env": module is

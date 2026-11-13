@@ -77,8 +77,9 @@ jobs:
           submodules: false
 
       - name: Restore the VLC build tree (contribs cache)
+        id: restore-cache
         if: ${{ !inputs.skip_build }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .vlc-build
           # Contribs (FFmpeg, dav1d, libass, ...) are the slow part (about an
@@ -114,6 +115,7 @@ jobs:
         run: emcc --version | head -1
 
       - name: Build VLC for wasm and link
+        id: build
         if: ${{ !inputs.skip_build }}
         env:
           VLC_SRC: ${{ github.workspace }}/vlc
@@ -135,17 +137,34 @@ jobs:
             rsync -a .vlc-build/vlc/build-emscripten vlc/ 2>/dev/null || true
           fi
           .github/scripts/build-vlc.sh
-          # Stage the finished engine + metadata, then refresh the cache.
-          mkdir -p wasm-stage
-          cp wasm/libvlc.js wasm/libvlc.wasm wasm/VLC_COMMIT wasm-stage/
+          # The script wrote the engine + VLC_COMMIT into $OUT_DIR (wasm-stage);
+          # it is the single source of truth for what lands on the site.
+          echo "staged:"
+          ls -la "$OUT_DIR"
           # Cache the contrib trees + tarballs (the hour-long part) for the
           # next build of the same or a nearby commit.
           mkdir -p .vlc-build/vlc/contrib .vlc-build/vlc/build
           rsync -a vlc/contrib/contrib-emscripten vlc/contrib/tarballs \
             vlc/contrib/wasm32-unknown-emscripten .vlc-build/vlc/contrib/
           rsync -a vlc/build-emscripten .vlc-build/vlc/ 2>/dev/null || true
-          echo "staged:"
-          ls -la wasm-stage/
+          echo "staged=1" >> "$GITHUB_OUTPUT"
+
+      - name: Save the VLC build tree (contribs cache)
+        # !cancelled() is a status function, so it overrides the implicit
+        # success() the runner ANDs into any `if:` without one — without it
+        # this would never run after a failed build. It still skips a
+        # cancelled run: staged=1 is only echoed after every staging rsync
+        # completed, so a run cancelled mid-rsync leaves it unset and cannot
+        # save a half-copied tree under this commit+patches key (which would
+        # poison it forever — cache entries are immutable). The cache-hit
+        # guard skips the save when the exact key was just restored: the
+        # contribs are already stored, and re-saving GBs of identical content
+        # wastes the run's tail.
+        if: ${{ !inputs.skip_build && steps.restore-cache.outputs.cache-hit != 'true' && !cancelled() && steps.build.outputs.staged == '1' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .vlc-build
+          key: vlc-contribs-${{ steps.vlc.outputs.commit }}-${{ hashFiles('patches/*', '.github/scripts/build-vlc.sh') }}
 
       - name: Smoke-test the engine under Node
         if: ${{ !inputs.skip_build }}
